@@ -89,6 +89,17 @@ function handleMouseDown(view, event, cellMinWidth) {
   let pluginState = key.getState(view.state)
   if (pluginState.activeHandle == -1 || pluginState.dragging) return false
 
+  const colUpdates = calcColumnSizes(pluginState.activeHandle, view)
+  colUpdates.forEach(({col, colpos, colwidth}) => {
+    const colNode = view.state.doc.resolve(colpos).nodeAfter;
+
+    console.log('setting col', col, colNode, 'at', colpos, 'to width', colwidth)
+    const tr = view.state.tr.setNodeMarkup(colpos, null, setAttr(colNode.attrs, "colwidth", colwidth));
+    view.dispatch(tr)
+    // updateColumnWidth(view, colpos, colwidth)
+    displayColumnWidth(view, colpos, colwidth, cellMinWidth)
+  });
+
   let cell = view.state.doc.nodeAt(pluginState.activeHandle)
   let width = currentColWidth(view, pluginState.activeHandle, cell.attrs)
   view.dispatch(view.state.tr.setMeta(key, {setDragging: {startX: event.clientX, startWidth: width}}))
@@ -113,6 +124,68 @@ function handleMouseDown(view, event, cellMinWidth) {
   window.addEventListener("mousemove", move)
   event.preventDefault()
   return true
+}
+
+function assert(cond, msg) {
+  if (!!!cond) {
+    console.error(msg);
+    throw new Error(msg);
+  }
+}
+
+function calcColumnSizes(cell, view) {
+  const sizes = [];
+
+  const $cell = view.state.doc.resolve(cell);
+  const rowNode = $cell.parent;
+  assert(rowNode.type.name === 'table_row', 'parent not table row');
+  
+  const rowPos = $cell.before($cell.depth)
+  assert(view.state.doc.nodeAt(rowPos).type.name === 'table_row', 'row pos did not match node')
+  
+  const rowDOM = view.domAtPos(rowPos + 1).node
+  assert(rowDOM.nodeName === 'TR', 'not table row element, was ' + rowDOM.nodeName)
+  
+  // find all the columns to the left of this one in the given row
+  // and assign them a width if they don't already have one set
+  const upToCol = $cell.index($cell.depth) + 1
+  let colOffset = 1
+  rowNode.forEach((colNode, _, i) => {
+    if (i >= upToCol) {
+      return;
+    }
+
+    // if (i === rowNode.childCount - 1) {
+    //   return;
+    // }
+    
+    const colPos = rowPos + colOffset;
+
+    // FIXME: remove, just for debug
+    const colNode2 = view.state.doc.nodeAt(colPos);
+    assert(colNode === colNode2, 'col node mismatch at ' + i)
+
+    const colDOM = rowDOM.children[i];
+
+    const { colspan, colwidth } = colNode.attrs;
+
+    // the column might be merged; if it is, we subtract the existing fixed widths
+    // any evenly distribute the remainder
+    const requiresSetWidth = colwidth ? colwidth.indexOf(0) > -1 : true
+    if (requiresSetWidth) {
+      const domWidth = colDOM.clientWidth
+      const alreadySetWidth = colwidth ? colwidth.reduce((acc, width) => acc + width, 0) : 0;
+      
+      const dividedWidth = (domWidth - alreadySetWidth) / (colspan || 1)
+      const newWidths = zeroes(colspan || 1).map((_, i) => (colwidth && colwidth[i]) ? colwidth[i] : dividedWidth)
+
+      sizes.push({col: i, colpos: colPos, colwidth: newWidths});
+    }
+
+    colOffset += colNode.nodeSize;
+  });
+
+  return sizes;
 }
 
 function currentColWidth(view, cellPos, {colspan, colwidth}) {
@@ -152,6 +225,12 @@ function updateHandle(view, value) {
   view.dispatch(view.state.tr.setMeta(key, {setHandle: value}))
 }
 
+/**
+ * Updates a column width within the document.
+ * @param {EditorView} view 
+ * @param {number} cell Cell position
+ * @param {number} width Column width in pixels, or 0 for auto
+ */
 function updateColumnWidth(view, cell, width) {
   let $cell = view.state.doc.resolve(cell)
   let table = $cell.node(-1), map = TableMap.get(table), start = $cell.start(-1)
@@ -171,6 +250,13 @@ function updateColumnWidth(view, cell, width) {
   if (tr.docChanged) view.dispatch(tr)
 }
 
+/**
+ * Updates the column width within the DOM via a given cell, but doesn't update the document.
+ * @param {EditorView} view 
+ * @param {number} cell Cell position
+ * @param {number} width Column width in pixels, or 0 for auto
+ * @param {number} cellMinWidth Minimum width in pixels for the cell
+ */
 function displayColumnWidth(view, cell, width, cellMinWidth) {
   let $cell = view.state.doc.resolve(cell)
   let table = $cell.node(-1), start = $cell.start(-1)
